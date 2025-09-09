@@ -1,29 +1,48 @@
 import { useEffect, useState } from 'react';
-import { io } from 'socket.io-client';
+import { io, Socket } from 'socket.io-client';
+
+// --- Definição de Tipos (espelhando o backend) ---
+type UserRole = 'SORTEADOR' | 'ESPECTADOR';
+
+interface User {
+  socketId: string;
+  userId: string;
+  role: UserRole;
+}
+
+interface ServerToClientEvents {
+  roleUpdate: (users: User[]) => void;
+  numberDrawn: (number: number) => void;
+}
+
+interface ClientToServerEvents {
+  joinRoom: (data: { roomId: string; userId: string }) => void;
+  drawNumber: (data: { roomId: string; keepSorteador: boolean }) => void;
+}
+
+// --- Componente React ---
 
 function App() {
-  const [role, setRole] = useState('ESPECTADOR');
-  const [number, setNumber] = useState(null);
-  const [users, setUsers] = useState([]);
-  const [socket, setSocket] = useState(null);
+  const [role, setRole] = useState<UserRole>('ESPECTADOR');
+  const [number, setNumber] = useState<number | null>(null);
+  const [users, setUsers] = useState<User[]>([]);
+  const [socket, setSocket] = useState<Socket<ServerToClientEvents, ClientToServerEvents> | null>(null);
   const [keepSorteador, setKeepSorteador] = useState(false);
   const roomId = 'sala1';
 
   useEffect(() => {
-    // Garante que o userId existe
     let userId = localStorage.getItem('userId');
     if (!userId) {
       userId = crypto.randomUUID();
       localStorage.setItem('userId', userId);
     }
 
-    // Cria o socket com conexão explícita
-    const newSocket = io('http://localhost:3000');
+    const newSocket: Socket<ServerToClientEvents, ClientToServerEvents> = io('http://localhost:3000');
     setSocket(newSocket);
 
     newSocket.on('connect', () => {
       console.log('Conectado:', newSocket.id);
-      newSocket.emit('joinRoom', { roomId, userId });
+      newSocket.emit('joinRoom', { roomId, userId: userId! });
     });
 
     newSocket.on('roleUpdate', (userRoles) => {
@@ -53,24 +72,24 @@ function App() {
       {role === 'SORTEADOR' && (
         <>
           <button onClick={handleDraw}>Sortear Número</button>
-          <label>
+          <label style={{ marginLeft: 10 }}>
             <input
               type="checkbox"
               checked={keepSorteador}
-              onChange={(e) => setKeepSorteador(e.target.checked)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setKeepSorteador(e.target.checked)}
             />
             Manter como sorteador
           </label>
         </>
       )}
 
-      {number && <h2>Número sorteado: {number}</h2>}
+      {number !== null && <h2>Número sorteado: {number}</h2>}
 
       <h3>Participantes:</h3>
       <ul>
         {users.map(({ socketId, userId: uid, role: papel }) => (
           <li key={socketId}>
-            {uid === localStorage.getItem('userId') ? 'Você' : uid}: {papel}
+            {uid === localStorage.getItem('userId') ? 'Você' : uid.substring(0, 8)}: {papel}
           </li>
         ))}
       </ul>

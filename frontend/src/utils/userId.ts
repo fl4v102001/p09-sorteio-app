@@ -1,8 +1,7 @@
-// utils/userId.js
-export function getOrCreateUserId() {
+export function getOrCreateUserId(): string {
   let userId = localStorage.getItem('userId');
   if (!userId) {
-    userId = crypto.randomUUID(); // ou use alguma lib como uuidv4()
+    userId = crypto.randomUUID();
     localStorage.setItem('userId', userId);
   }
   return userId;
