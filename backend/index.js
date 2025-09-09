@@ -3,7 +3,9 @@ import { Server } from 'socket.io';
 
 const httpServer = createServer();
 const io = new Server(httpServer, {
-  cors: { origin: 'http://localhost:5173' }
+  cors: { origin: 'http://localhost:5173',
+          methods: ['GET', 'POST']
+        }
 });
 
 const rooms = {}; // Estrutura: { roomId: { users: { socketId: { userId, role } }, sorteador: socketId } }
