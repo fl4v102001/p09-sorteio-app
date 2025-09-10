@@ -28,6 +28,7 @@ interface ServerToClientEvents {
 interface ClientToServerEvents {
   joinRoom: (data: { roomId: string; userId: string }) => void;
   drawNumber: (data: { roomId: string; keepSorteador: boolean }) => void;
+  transferRole: (data: { roomId: string; targetSocketId: string }) => void; // Novo evento
 }
 
 // --- Implementação do Servidor ---
@@ -115,6 +116,31 @@ io.on('connection', (socket: Socket<ClientToServerEvents, ServerToClientEvents>)
 
     io.to(roomId).emit('roleUpdate', mapRoles(room.users));
   });
+
+  // +++ INÍCIO DA NOVA LÓGICA +++
+  socket.on('transferRole', ({ roomId, targetSocketId }) => {
+    const room = rooms[roomId];
+    // 1. Validações
+    if (!room) return;
+    if (socket.id !== room.sorteador) {
+      console.warn(`⚠️ Tentativa de transferência de papel por não-sorteador: ${socket.id}`);
+      return;
+    }
+    const currentSorteador = room.users[socket.id];
+    const targetUser = room.users[targetSocketId];
+    if (!targetUser || !currentSorteador) return;
+
+    console.log(`🔃 Transferindo papel de ${currentSorteador.userId} para ${targetUser.userId}`);
+
+    // 2. Troca de papéis
+    currentSorteador.role = 'ESPECTADOR';
+    targetUser.role = 'SORTEADOR';
+    room.sorteador = targetSocketId;
+
+    // 3. Notificar todos os clientes
+    io.to(roomId).emit('roleUpdate', mapRoles(room.users));
+  });
+  // +++ FIM DA NOVA LÓGICA +++
 
   socket.on('disconnect', () => {
     console.log(`🔴 Desconectado: ${socket.id}`);
