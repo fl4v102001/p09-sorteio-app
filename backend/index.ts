@@ -23,12 +23,20 @@ type Rooms = Record<string, Room>; // roomId -> Room
 interface ServerToClientEvents {
   roleUpdate: (users: { socketId: string; userId: string; role: UserRole }[]) => void;
   numberDrawn: (number: number) => void;
+  receber_solicitacao_de_papel: (requester: { socketId: string; userId: string }) => void;
+  solicitacao_recusada: () => void; // Evento de recusa
 }
 
 interface ClientToServerEvents {
   joinRoom: (data: { roomId: string; userId: string }) => void;
   drawNumber: (data: { roomId: string; keepSorteador: boolean }) => void;
-  transferRole: (data: { roomId: string; targetSocketId: string }) => void; // Novo evento
+  transferRole: (data: { roomId: string; targetSocketId: string }) => void;
+  solicitar_papel_sorteador: (data: { roomId: string }) => void;
+  responder_solicitacao_de_papel: (data: {
+    roomId: string;
+    aprovado: boolean;
+    idDoSolicitante: string;
+  }) => void;
 }
 
 // --- Implementação do Servidor ---
@@ -51,6 +59,26 @@ function mapRoles(users: UsersMap): { socketId: string; userId: string; role: Us
   }));
 }
 
+// +++ LÓGICA REUTILIZÁVEL DE TROCA DE PAPEL +++
+function performRoleSwap(roomId: string, oldSorteadorId: string, newSorteadorId: string) {
+    const room = rooms[roomId];
+    if (!room) return;
+
+    const oldSorteador = room.users[oldSorteadorId];
+    const newSorteador = room.users[newSorteadorId];
+
+    if (!oldSorteador || !newSorteador) return;
+
+    console.log(`🔃 Transferindo papel de ${oldSorteador.userId} para ${newSorteador.userId}`);
+
+    oldSorteador.role = 'ESPECTADOR';
+    newSorteador.role = 'SORTEADOR';
+    room.sorteador = newSorteadorId;
+
+    io.to(roomId).emit('roleUpdate', mapRoles(room.users));
+}
+
+
 io.on('connection', (socket: Socket<ClientToServerEvents, ServerToClientEvents>) => {
   console.log(`🟢 Nova conexão: ${socket.id}`);
 
@@ -63,23 +91,12 @@ io.on('connection', (socket: Socket<ClientToServerEvents, ServerToClientEvents>)
     }
 
     const room = rooms[roomId];
-
-    const existingEntry = Object.entries(room.users).find(
-      ([, user]) => user.userId === userId
-    );
-
     let role: UserRole = 'ESPECTADOR';
 
-    if (existingEntry) {
-      role = existingEntry[1].role;
-      console.log(`🔄 Reassociando ${userId} como ${role}`);
-    } else {
-      const hasSorteador = Object.values(room.users).some((u) => u.role === 'SORTEADOR');
-      if (!hasSorteador) {
-        role = 'SORTEADOR';
-        room.sorteador = socket.id;
-        console.log(`👑 ${userId} definido como primeiro SORTEADOR`);
-      }
+    if (!Object.values(room.users).some((u) => u.role === 'SORTEADOR')) {
+      role = 'SORTEADOR';
+      room.sorteador = socket.id;
+      console.log(`👑 ${userId} definido como primeiro SORTEADOR`);
     }
 
     room.users[socket.id] = { userId, role };
@@ -97,74 +114,68 @@ io.on('connection', (socket: Socket<ClientToServerEvents, ServerToClientEvents>)
     io.to(roomId).emit('numberDrawn', number);
 
     if (!keepSorteador) {
-      const userIds = Object.keys(room.users).filter((id) => id !== socket.id);
-      if (userIds.length > 0) {
-        const newSorteadorId = userIds[Math.floor(Math.random() * userIds.length)];
-        
-        if (room.users[socket.id]) {
-          room.users[socket.id].role = 'ESPECTADOR';
+        const userIds = Object.keys(room.users).filter((id) => id !== socket.id);
+        if (userIds.length > 0) {
+            const newSorteadorId = userIds[Math.floor(Math.random() * userIds.length)];
+            performRoleSwap(roomId, socket.id, newSorteadorId);
         }
-        if (room.users[newSorteadorId]) {
-          room.users[newSorteadorId].role = 'SORTEADOR';
-          room.sorteador = newSorteadorId;
-          console.log(`🔁 Troca de SORTEADOR: ${room.users[newSorteadorId].userId}`);
-        }
-      }
-    } else {
-      console.log(`🔒 ${room.users[socket.id]?.userId} manteve-se como SORTEADOR`);
     }
-
     io.to(roomId).emit('roleUpdate', mapRoles(room.users));
   });
 
-  // +++ INÍCIO DA NOVA LÓGICA +++
   socket.on('transferRole', ({ roomId, targetSocketId }) => {
     const room = rooms[roomId];
-    // 1. Validações
-    if (!room) return;
-    if (socket.id !== room.sorteador) {
-      console.warn(`⚠️ Tentativa de transferência de papel por não-sorteador: ${socket.id}`);
-      return;
-    }
-    const currentSorteador = room.users[socket.id];
-    const targetUser = room.users[targetSocketId];
-    if (!targetUser || !currentSorteador) return;
-
-    console.log(`🔃 Transferindo papel de ${currentSorteador.userId} para ${targetUser.userId}`);
-
-    // 2. Troca de papéis
-    currentSorteador.role = 'ESPECTADOR';
-    targetUser.role = 'SORTEADOR';
-    room.sorteador = targetSocketId;
-
-    // 3. Notificar todos os clientes
-    io.to(roomId).emit('roleUpdate', mapRoles(room.users));
+    if (!room || socket.id !== room.sorteador) return;
+    performRoleSwap(roomId, socket.id, targetSocketId);
   });
-  // +++ FIM DA NOVA LÓGICA +++
+
+  socket.on('solicitar_papel_sorteador', ({ roomId }) => {
+    const room = rooms[roomId];
+    const requester = room?.users[socket.id];
+    if (!room || !requester || !room.sorteador) return;
+
+    console.log(`🙋‍♂️ Usuário ${requester.userId} está solicitando o papel de sorteador.`);
+    io.to(room.sorteador).emit('receber_solicitacao_de_papel', {
+      socketId: socket.id,
+      userId: requester.userId,
+    });
+  });
+
+  socket.on('responder_solicitacao_de_papel', ({ roomId, aprovado, idDoSolicitante }) => {
+    const room = rooms[roomId];
+    if (!room || socket.id !== room.sorteador) return;
+
+    const solicitante = room.users[idDoSolicitante];
+    if (!solicitante) return;
+
+    if (aprovado) {
+      console.log(`✅ Pedido de ${solicitante.userId} APROVADO.`);
+      performRoleSwap(roomId, socket.id, idDoSolicitante);
+    } else {
+      console.log(`❌ Pedido de ${solicitante.userId} RECUSADO.`);
+      // +++ EMITIR EVENTO DE RECUSA PARA O SOLICITANTE +++
+      io.to(idDoSolicitante).emit('solicitacao_recusada');
+    }
+  });
 
   socket.on('disconnect', () => {
     console.log(`🔴 Desconectado: ${socket.id}`);
-
     for (const roomId in rooms) {
       const room = rooms[roomId];
       if (room.users[socket.id]) {
-        const { userId, role } = room.users[socket.id];
-        const wasSorteador = role === 'SORTEADOR';
-
+        const wasSorteador = socket.id === room.sorteador;
         delete room.users[socket.id];
-        console.log(`❌ Usuário ${userId} removido da sala ${roomId}`);
 
         if (wasSorteador) {
-          room.sorteador = null;
           const remaining = Object.keys(room.users);
           if (remaining.length > 0) {
             const newSorteadorId = remaining[0];
             room.users[newSorteadorId].role = 'SORTEADOR';
             room.sorteador = newSorteadorId;
-            console.log(`👑 Novo SORTEADOR após desconexão: ${room.users[newSorteadorId].userId}`);
+          } else {
+            room.sorteador = null;
           }
         }
-
         io.to(roomId).emit('roleUpdate', mapRoles(room.users));
       }
     }
